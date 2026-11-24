@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Run .ahk scripts with the genuine AutoHotkey interpreter, bridged to Linux input."""
+import fcntl, glob, hashlib, os, re, shutil, subprocess, sys, tempfile, time
+
+HOME = os.environ.get("AHKB_HOME") or os.path.expanduser("~/.local/share/ahk-bridge")
+RUN = os.environ.get("AHKB_RUN") or os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "ahk-bridge")
+USAGE = """usage: ahk [--v1|--v2] [--default-v1] [--debug] script.ahk [args...]
+       ahk --windows  list windows with the names #IfWinActive can match
+       ahk --stop     close every running script and release the keyboard
+Emergency: hold Left Ctrl + Right Ctrl + Esc to release the keyboard and mouse."""
+
+
+def die(msg):
+    print(f"ahk: {msg}", file=sys.stderr)
+    if not sys.stderr.isatty():  # started by double-click: nobody sees stderr
+        try: subprocess.run(["notify-send", "-a", "ahk", "AutoHotkey", msg], timeout=5)
+        except (OSError, subprocess.TimeoutExpired): pass
+    sys.exit(1)
+
+
+def wine_env():
+    e = dict(os.environ)
+    e["WINEPREFIX"] = os.path.join(HOME, "prefix")
+    e.setdefault("WINEDEBUG", "-all")
+    e["WINEDLLOVERRIDES"] = "version=n,b;winemenubuilder.exe=;" + e.get("WINEDLLOVERRIDES", "")
+    return e
+
+
+def win(path):
+    return "Z:" + os.path.abspath(path).replace("/", "\\")
+
+
+def ensure_prefix(e):
+    if not os.path.exists(os.path.join(e["WINEPREFIX"], "system.reg")):
+        print("ahk: creating Wine prefix (first run only)...", file=sys.stderr)
+        q = dict(e, WINEDLLOVERRIDES="mscoree=;mshtml=;winemenubuilder.exe=")
+        subprocess.run(["wineboot", "-i"], env=q, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        subprocess.run(["wineserver", "-w"], env=q)
+
+
+def endpoint():
+    try:
+        with open(os.path.join(RUN, "endpoint")) as f:
+            port, token = f.read().split()
+    except (OSError, ValueError):
+        return None
+    # A held lock means the daemon that wrote the endpoint is alive.
+    try:
+        with open(os.path.join(RUN, "lock")) as l:
+            fcntl.flock(l, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return None
+    except BlockingIOError:
+        return port, token
+    except OSError:
+        return None
+
+
+def ensure_daemon(debug):
+    if ep := endpoint():
+        return ep
+    if not os.access("/dev/uinput", os.W_OK) or not any(os.access(p, os.R_OK) for p in glob.glob("/dev/input/event*")):
+        die("no permission to use the keyboard and mouse devices; run ./setup.sh from the ahk-linux-wine folder")
+    os.makedirs(RUN, mode=0o700, exist_ok=True)
+    try:
+        os.unlink(os.path.join(RUN, "endpoint"))
+    except FileNotFoundError:
+        pass
+    log = open(os.path.join(RUN, "ahkd.log"), "w")
+    cmd = [os.path.join(HOME, "bin", "ahkd"), *(["-v"] if debug else []), RUN]
+    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    for _ in range(100):
+        if ep := endpoint():
+            return ep
+        if p.poll():
+            break
+        time.sleep(0.03)
+    die(f"input daemon failed to start, see {log.name}")
+
+
+def detect(script, e, default):
+    raw = open(script, "rb").read()
+    enc = "utf-16" if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig"
+    text = raw.decode(enc, "replace")
+    # 1. #Requires, exactly as the official launcher honours it
+    if m := re.search(r"^[ \t]*#Requires[ \t]+AutoHotkey[ \t]+(?:>=?[ \t]*|=[ \t]*)?v?([12])", text, re.I | re.M):
+        return m[1]
+    # 2. AutoHotkey's own syntax identifier, run by AutoHotkey itself (cached by content)
+    cache = os.path.join(HOME, "cache", "2-" + hashlib.sha256(raw).hexdigest())
+    if os.path.exists(cache):
+        v = open(cache).read()
+    else:
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        q = {k: x for k, x in e.items() if not k.startswith("AHKB_")}
+        def v2(*args):  # into a file: a pipe would stay open until Wine's background processes exit
+            with tempfile.TemporaryFile() as o:
+                c = subprocess.run(["wine", os.path.join(HOME, "v2", "AutoHotkey64.exe"), "/ErrorStdOut", *args], env=q, stdin=subprocess.DEVNULL, stdout=o, stderr=o, timeout=60)
+                o.seek(0)
+                return c.returncode, o.read()
+        with tempfile.TemporaryDirectory() as t:
+            src, out, warn = (os.path.join(t, n) for n in ("s.ahk", "out", "warn.ahk"))
+            with open(src, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+            with open(warn, "w") as f:
+                f.write("#Warn All, StdOut\n")  # as text: a warning window would wait for a click
+            try:
+                v2(win(os.path.join(HOME, "detect.ahk")), win(src), win(out))
+                v = open(out).read().lstrip("\ufeff").strip() if os.path.exists(out) else "0"
+                if v == "0":
+                    # 3. Too short to tell: v1 if v2 refuses to load it, or takes its plain text ("Send Hello") for unset variables
+                    code, said = v2("/include", win(warn), "/validate", win(script))
+                    v = "1" if code == 2 or b"never be assigned a value" in said else "0"
+            except subprocess.TimeoutExpired:
+                return default
+        with open(cache, "w") as f:
+            f.write(v)
+    if v in ("1", "2"):
+        return v
+    print(f"ahk: can't tell whether this is v1 or v2; using v{default} (override with --v1/--v2)", file=sys.stderr)
+    return default
+
+
+def list_windows():
+    import socket, struct
+    port, token = ensure_daemon(False)
+    s = socket.create_connection(("127.0.0.1", int(port)))
+    s.sendall(bytes.fromhex(token))
+    wins, active, end = {}, None, time.time() + 1.0
+    s.settimeout(0.1)
+    buf = b""
+    while time.time() < end:
+        try:
+            d = s.recv(65536)
+        except TimeoutError:
+            continue
+        if not d: break
+        buf += d
+        while len(buf) >= 32:
+            t, i, a, b, c, _, _ = struct.unpack("<6IQ", buf[:32])
+            n = c if t in (109, 112) else 0
+            if len(buf) < 32 + n: break
+            body, buf = buf[32:32 + n], buf[32 + n:]
+            if t == 109 and a: wins[i] = [x.decode("utf-8", "replace") for x in body[32:].split(b"\0")[:3]]
+            elif t == 109: wins.pop(i, None)
+            elif t == 110: active = i
+    if not wins: die("no windows reported (this needs KDE Plasma)")
+    for i, (title, cls, exe) in wins.items():
+        print(f"{'*' if i == active else ' '} {title}\n    ahk_class {cls}\n    ahk_exe {exe.rsplit(chr(92), 1)[-1]}")
+    print("\n* = active window")
+
+
+def main():
+    a, ver, default, debug = sys.argv[1:], None, "2", False
+    while a and a[0].startswith("--") and a[0] != "--help":
+        o = a.pop(0)
+        if o in ("--v1", "--v2"): ver = o[-1]
+        elif o == "--default-v1": default = "1"
+        elif o == "--debug": debug = True
+        elif o == "--windows":
+            list_windows()
+            return
+        elif o == "--stop":
+            subprocess.run(["pkill", "-u", str(os.getuid()), "-x", "ahkd"])
+            if os.path.isdir(os.path.join(HOME, "prefix")):
+                subprocess.run(["wineserver", "-k"], env=wine_env())
+            return
+        else: die(USAGE)
+    if not a or a[0] in ("-h", "--help"): die(USAGE)
+    script = a.pop(0)
+    if not os.path.isfile(script): die(f"no such script: {script}")
+    if not shutil.which("wine"): die("Wine is not installed; run ./setup.sh from the ahk-linux-wine folder")
+    e = wine_env()
+    ensure_prefix(e)
+    ver = ver or detect(script, e, default)
+    e["AHKB_PORT"], e["AHKB_TOKEN"] = ensure_daemon(debug)
+    exe = os.path.join(HOME, "v1/AutoHotkeyU64.exe" if ver == "1" else "v2/AutoHotkey64.exe")
+    os.execvpe("wine", ["wine", exe, win(script), *a], e)
+
+
+main()
