@@ -9,6 +9,8 @@ printf 'Remove ahk-linux-wine and its Wine folder (%s)? [y/N] ' "$H"; read -r a 
 [ "$(readlink "$L" 2>/dev/null)" != "$H/bin/ahk" ] || rm -f "$L"
 rm -rf "$H"
 rm -f "$D/applications/ahk-linux-wine.desktop" "$D/mime/packages/ahk-linux-wine.xml"
+rm -f "$D"/icons/hicolor/*/mimetypes/application-x-autohotkey.png
+touch "$D/icons/hicolor" 2>/dev/null || true
 update-mime-database "$D/mime" 2>/dev/null || true
 update-desktop-database "$D/applications" 2>/dev/null || true
 echo "Removed."

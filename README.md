@@ -12,17 +12,16 @@ Limiting a hotkey to one window needs KDE Plasma.
 
 ## Requirements
 
-| What | Details |
-|---|---|
-| Computer | 64-bit x86 (Intel or AMD), with a keyboard and mouse |
-| System | Linux with systemd and glibc 2.34 or newer |
-| Desktop | KDE Plasma for everything; tested on Plasma 6.8 with Wayland. On other desktops, hotkeys and Send should work, but limiting a hotkey to one window and typing characters from other keyboard layouts do not |
-| Programs | Wine (tested with 11.22), Python 3.10 or newer, unzip, curl. `./setup.sh` offers to install the missing ones on Arch, Debian, Ubuntu, Fedora and openSUSE based systems |
-| For the first setup | An internet connection, and your password if programs or permissions are missing |
-| Disk space | About 400 MB, plus Wine itself |
+- **Wine** (tested with 11.22)
+- **Python** 3.10 or newer
+- **unzip** and **curl**
+- **KDE Plasma** for limiting hotkeys to a window and for typing characters from other keyboard layouts; hotkeys and Send
+  should work on other desktops too
+- *Optional:* **libnotify** (`notify-send`), for update notices
 
-You do not need to download AutoHotkey; setup does that. Building from source also needs gcc, make, clang, lld and the headers
-of Wine, systemd and libxkbcommon.
+`./setup.sh` offers to install Wine, Python, unzip and curl if they are missing (Arch, Debian, Ubuntu, Fedora and openSUSE
+based systems). AutoHotkey itself is downloaded by setup. Building from source also needs gcc, make, clang, lld and the headers
+of systemd and libxkbcommon.
 
 ## Install
 
@@ -64,6 +63,7 @@ Nothing is installed without asking you first.
 | Run a script | Double-click it, or `ahk script.ahk` |
 | Pause, reload or exit a script | Right-click its tray icon |
 | Close all scripts | `ahk --stop` |
+| Update | `ahk --update` |
 | **Get your keyboard back in an emergency** | Hold **Left Ctrl + Right Ctrl + Esc** |
 | Force a version | `ahk --v1 script.ahk` or `ahk --v2 script.ahk` |
 
@@ -111,14 +111,24 @@ Hotkey names such as `]` or `t` mean the key on your first Latin layout, so scri
 | Odd mouse behaviour with input-remapper | Stop its preset for that mouse; both programs want to control it |
 | "input daemon failed to start" | Look at the log file it names |
 
-Still stuck? Open an issue with the output of `./check.sh`, your distribution and desktop, and the shortest script that shows
+Still stuck? Open an issue with the output of `ahk --version` and `./check.sh`, your distribution and desktop, and the shortest script that shows
 the problem.
 
-## Update and uninstall
+## Update
 
-- **Update:** download and extract the new release, run `./setup.sh` in it, and restart your scripts.
-  From source: `git pull && ./setup.sh`.
-- **Uninstall:** run `./uninstall.sh` in the same folder. Your scripts are not touched.
+    ahk --update
+
+Once a day, when you start a script, ahk looks for a new version and shows a notice with an **Update** button. Your scripts keep
+running during an update; restart them to use the new version. If an update cannot be installed, the old version is put back.
+
+The check asks GitHub for the newest version number and sends nothing about you. To turn it off: `ahk --no-update-check`
+(on again: `ahk --update-check`).
+
+Coming from 0.1? Download and extract the newest release once and run `./setup.sh` in it. From then on, `ahk --update` works.
+
+## Uninstall
+
+Run `./uninstall.sh` in the folder you installed from, or in a freshly downloaded one. Your scripts are not touched.
 
 ## What does not work yet
 

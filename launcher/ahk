@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Run .ahk scripts with the genuine AutoHotkey interpreter, bridged to Linux input."""
-import fcntl, glob, hashlib, os, re, shutil, subprocess, sys, tempfile, time
+import fcntl, glob, hashlib, os, re, shutil, subprocess, sys, tarfile, tempfile, time, urllib.request
 
 HOME = os.environ.get("AHKB_HOME") or os.path.expanduser("~/.local/share/ahk-bridge")
 RUN = os.environ.get("AHKB_RUN") or os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "ahk-bridge")
 USAGE = """usage: ahk [--v1|--v2] [--default-v1] [--debug] script.ahk [args...]
        ahk --windows  list windows with the names #IfWinActive can match
        ahk --stop     close every running script and release the keyboard
+       ahk --update   install the newest version        ahk --version
+       ahk --no-update-check   never look for updates   (ahk --update-check: once a day again)
 Emergency: hold Left Ctrl + Right Ctrl + Esc to release the keyboard and mouse."""
 
 
@@ -42,7 +44,7 @@ def ensure_prefix(e):
 def endpoint():
     try:
         with open(os.path.join(RUN, "endpoint")) as f:
-            port, token = f.read().split()
+            port, token, *proto = f.read().split()
     except (OSError, ValueError):
         return None
     # A held lock means the daemon that wrote the endpoint is alive.
@@ -51,14 +53,16 @@ def endpoint():
             fcntl.flock(l, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return None
     except BlockingIOError:
-        return port, token
+        return port, token, int(proto[0]) if proto else 1
     except OSError:
         return None
 
 
 def ensure_daemon(debug):
     if ep := endpoint():
-        return ep
+        if ep[2] != version()[1]:
+            die("ahk-linux-wine was updated while scripts are running. Close them first: ahk --stop")
+        return ep[:2]
     if not os.access("/dev/uinput", os.W_OK) or not any(os.access(p, os.R_OK) for p in glob.glob("/dev/input/event*")):
         die("no permission to use the keyboard and mouse devices; run ./setup.sh from the ahk-linux-wine folder")
     os.makedirs(RUN, mode=0o700, exist_ok=True)
@@ -71,7 +75,7 @@ def ensure_daemon(debug):
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
     for _ in range(100):
         if ep := endpoint():
-            return ep
+            return ep[:2]
         if p.poll():
             break
         time.sleep(0.03)
@@ -149,6 +153,144 @@ def list_windows():
     print("\n* = active window")
 
 
+# ---- updates ----
+URL = os.environ.get("AHKB_UPDATE_URL") or "https://github.com/oleja32/ahk-linux-wine/releases"
+NAME = "ahk-linux-wine"
+
+
+def version():
+    """(version, protocol of the installed daemon)"""
+    try:
+        with open(os.path.join(HOME, "VERSION")) as f:
+            v, p = f.read().split()
+        return v, int(p)
+    except (OSError, ValueError):
+        return "0", 1
+
+
+def numbers(v): return [int(x) for x in re.findall(r"\d+", v)]
+
+
+def fetch(path, limit=20_000_000):
+    req = urllib.request.Request(f"{URL}/{path}", headers={"User-Agent": NAME})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        if URL.startswith("https:") and not r.geturl().startswith("https:"): raise OSError("not a secure connection")
+        data = r.read(limit + 1)
+        if len(data) > limit: raise OSError("the file is too large")
+        return r.geturl(), data
+
+
+def latest():
+    m = re.search(r"/tag/v(\d+(?:\.\d+)*)$", fetch("latest")[0])  # redirects to the newest release
+    if not m: raise OSError("no release found")
+    return m[1]
+
+
+def notify(msg, *actions):
+    """Shows a desktop notification; returns the name of the button that was clicked, if any."""
+    cmd = ["notify-send", "-a", "AutoHotkey", "-i", "application-x-autohotkey"]
+    for a in actions: cmd += ["-A", a]
+    try:
+        return subprocess.run([*cmd, NAME, msg], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=3600).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+class UpdateError(Exception): pass
+
+
+def unpack(data, d):
+    path = os.path.join(d, "a.tar.gz")
+    with open(path, "wb") as f: f.write(data)
+    with tarfile.open(path) as t:
+        for m in t.getmembers():  # plain files and folders inside our own folder, nothing else
+            parts = m.name.split("/")
+            if parts[0] != NAME or ".." in parts or not (m.isfile() or m.isdir()): raise UpdateError("the download has unexpected contents")
+            m.mode = 0o755 if m.isdir() or m.mode & 0o100 else 0o644
+            m.uid = m.gid = os.getuid()
+        t.extractall(d, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+    return os.path.join(d, NAME)
+
+
+def install(src):
+    """Runs the new version's installer; if it fails, puts everything back."""
+    keep = os.path.join(HOME, "previous")
+    parts = [p for p in ("bin", "v1", "v2", "inc", "detect.ahk", "VERSION") if os.path.exists(os.path.join(HOME, p))]
+    shutil.rmtree(keep, ignore_errors=True)
+    os.makedirs(keep)
+    for p in parts:
+        f, t = os.path.join(HOME, p), os.path.join(keep, p)
+        shutil.copytree(f, t, symlinks=True) if os.path.isdir(f) else shutil.copy2(f, t)
+    log = os.path.join(HOME, "update.log")
+    with open(log, "w") as l:
+        ok = subprocess.run(["./install.sh"], cwd=src, stdin=subprocess.DEVNULL, stdout=l, stderr=l).returncode == 0
+    if not ok:
+        bad = os.path.join(HOME, "failed")
+        shutil.rmtree(bad, ignore_errors=True)
+        os.makedirs(bad)
+        for p in parts:  # renames: files that running scripts have open stay intact
+            if os.path.lexists(os.path.join(HOME, p)): os.rename(os.path.join(HOME, p), os.path.join(bad, p))
+            os.rename(os.path.join(keep, p), os.path.join(HOME, p))
+        shutil.rmtree(bad, ignore_errors=True)
+    shutil.rmtree(keep, ignore_errors=True)
+    if not ok: raise UpdateError(f"the update could not be installed, the old version was put back (details: {log})")
+
+
+def update(say, interactive):
+    with open(os.path.join(HOME, "update.lock"), "w") as lock:
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: raise UpdateError("an update is already running")
+        try:
+            new = latest()
+            if numbers(new) <= numbers(version()[0]): return say(f"You have the newest version ({version()[0]}).")
+            say(f"Updating {version()[0]} to {new}...")
+            data = fetch(f"download/v{new}/{NAME}.tar.gz")[1]
+            want = fetch(f"download/v{new}/{NAME}.tar.gz.sha256")[1].decode().split()
+        except (OSError, ValueError) as x:
+            raise UpdateError(f"could not download the update ({x})")
+        if not want or hashlib.sha256(data).hexdigest() != want[0]: raise UpdateError("the download is damaged (wrong checksum); nothing was changed")
+        with tempfile.TemporaryDirectory() as d:
+            try:
+                src = unpack(data, d)
+                with open(os.path.join(src, "VERSION")) as f: v, proto = f.read().split()
+            except (OSError, ValueError, tarfile.TarError) as x:
+                raise UpdateError(f"the download is damaged ({x}); nothing was changed")
+            if v != new: raise UpdateError("the download is not the announced version; nothing was changed")
+            ep = endpoint()
+            if ep and ep[2] != int(proto): raise UpdateError(f"version {new} cannot be installed while scripts are running. Close them (ahk --stop), then: ahk --update")
+            if subprocess.run(["./check.sh"], cwd=src, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+                if not interactive: raise UpdateError(f"version {new} needs something more on your system. Type in a terminal: ahk --update")
+                if subprocess.run(["./setup.sh"], cwd=src).returncode: raise UpdateError("setup did not finish")
+            else:
+                install(src)
+        say(f"Updated to {new}. " + ("Restart your scripts to use it." if ep else ""))
+
+
+def check_update():
+    """Runs in the background, at most once a day; any problem is silent."""
+    try: new = latest()
+    except (OSError, ValueError): return
+    skip = os.path.join(HOME, "update-skip")
+    if numbers(new) <= numbers(version()[0]) or (os.path.exists(skip) and open(skip).read().strip() == new): return
+    c = notify(f"Version {new} is available. To install it later, type: ahk --update", "update=Update", "skip=Skip this version")
+    if c == "skip":
+        with open(skip, "w") as f: f.write(new)
+    elif c == "update":
+        try: update(lambda m: notify(m), False)
+        except UpdateError as x: notify(str(x))
+
+
+def maybe_check():
+    stamp = os.path.join(HOME, "update-checked")
+    try:
+        if os.path.exists(os.path.join(HOME, "no-update-check")) or ("AHKB_HOME" in os.environ and "AHKB_UPDATE_URL" not in os.environ): return
+        if os.path.exists(stamp) and 0 <= time.time() - os.path.getmtime(stamp) < 86400: return
+        with open(stamp, "w"): pass
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "--check-update-now"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, cwd="/")
+    except OSError:
+        pass
+
+
 def main():
     a, ver, default, debug = sys.argv[1:], None, "2", False
     while a and a[0].startswith("--") and a[0] != "--help":
@@ -158,6 +300,22 @@ def main():
         elif o == "--debug": debug = True
         elif o == "--windows":
             list_windows()
+            return
+        elif o == "--version":
+            print(f"{NAME} {version()[0]}")
+            return
+        elif o == "--update":
+            try: update(print, sys.stdin.isatty())
+            except UpdateError as x: die(str(x))
+            return
+        elif o == "--check-update-now":
+            check_update()
+            return
+        elif o in ("--no-update-check", "--update-check"):
+            f = os.path.join(HOME, "no-update-check")
+            if o == "--no-update-check": open(f, "w").close()
+            elif os.path.exists(f): os.unlink(f)
+            print("ahk will " + ("not look for updates any more." if o == "--no-update-check" else "look for updates once a day."))
             return
         elif o == "--stop":
             subprocess.run(["pkill", "-u", str(os.getuid()), "-x", "ahkd"])
@@ -173,6 +331,7 @@ def main():
     ensure_prefix(e)
     ver = ver or detect(script, e, default)
     e["AHKB_PORT"], e["AHKB_TOKEN"] = ensure_daemon(debug)
+    maybe_check()
     exe = os.path.join(HOME, "v1/AutoHotkeyU64.exe" if ver == "1" else "v2/AutoHotkey64.exe")
     os.execvpe("wine", ["wine", exe, win(script), *a], e)
 

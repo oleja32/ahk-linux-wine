@@ -15,14 +15,20 @@ get() { # version sha256
   echo "$2  $f" | sha256sum -c --quiet
 }
 get $V1 $V1SUM; get $V2 $V2SUM
-unzip -qo "$H/dl/AutoHotkey_$V1.zip" -d "$H/v1"
-unzip -qo "$H/dl/AutoHotkey_$V2.zip" -d "$H/v2"
+unpack() { # folder version: only when it changed, a running script has these files open
+  [ "$(cat "$H/$1/.version" 2>/dev/null)" = "$2" ] && [ -f "$H/$1/$3" ] && return
+  unzip -qo "$H/dl/AutoHotkey_$2.zip" -d "$H/$1"
+  echo "$2" > "$H/$1/.version"
+}
+unpack v1 $V1 AutoHotkeyU64.exe
+unpack v2 $V2 AutoHotkey64.exe
 # install replaces the file, so a script that is running keeps its old copy
 install -m644 $B/version.dll "$H/v1/version.dll"; install -m644 $B/version.dll "$H/v2/version.dll"
 rm -rf "$H/inc"; cp -r "$H/v2/UX/inc" "$H/inc"
 cp launcher/detect.ahk "$H/"
 install -m755 $B/ahkd "$H/bin/ahkd"
 install -m755 launcher/ahk "$H/bin/ahk"
+install -m644 VERSION "$H/VERSION"
 echo "installed to $H"
 [ -z "${AHKB_HOME:-}" ] || exit 0   # private copy (tests): leave the desktop alone
 
@@ -36,7 +42,7 @@ cat > "$D/applications/ahk-linux-wine.desktop" <<X
 Type=Application
 Name=AutoHotkey (ahk-linux-wine)
 Exec="$H/bin/ahk" %f
-Icon=input-keyboard
+Icon=application-x-autohotkey
 NoDisplay=true
 Terminal=false
 MimeType=application/x-autohotkey;application/x-wine-extension-ahk;
@@ -46,11 +52,18 @@ cat > "$D/mime/packages/ahk-linux-wine.xml" <<X
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
   <mime-type type="application/x-autohotkey">
     <comment>AutoHotkey script</comment>
+    <icon name="application-x-autohotkey"/>
     <sub-class-of type="text/plain"/>
     <glob pattern="*.ahk" weight="60"/>
   </mime-type>
 </mime-info>
 X
+# AutoHotkey's own icon for .ahk files, taken from the download
+rm -f "$D"/icons/hicolor/*/mimetypes/application-x-autohotkey.png
+python3 launcher/icons.py "$H/v1/AutoHotkeyU64.exe" "$D/icons/hicolor" application-x-autohotkey || echo "note: could not set the .ahk file icon"
+touch "$D/icons/hicolor" 2>/dev/null || true
 update-mime-database "$D/mime" || true
 update-desktop-database "$D/applications" 2>/dev/null || true
 for m in application/x-autohotkey application/x-wine-extension-ahk; do xdg-mime default ahk-linux-wine.desktop $m 2>/dev/null || true; done
+# let KDE programs that are already open notice the icon
+dbus-send --session --type=signal /KIconLoader org.kde.KIconLoader.iconChanged int32:0 2>/dev/null || true

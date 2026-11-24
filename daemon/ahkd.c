@@ -833,6 +833,7 @@ int main(int argc, char **argv) {
     if (getrandom(token, sizeof token, 0) != sizeof token) die("getrandom");
     FILE *f = fopen("endpoint.tmp", "w"); if (!f) die("endpoint");
     fprintf(f, "%d ", ntohs(sa.sin_port)); for (int i = 0; i < AHKB_TOKEN_LEN; i++) fprintf(f, "%02x", token[i]);
+    fprintf(f, " %d", AHKB_PROTO);
     fclose(f); rename("endpoint.tmp", "endpoint");
     bus_open(); lay_query();
     signal(SIGTERM, on_term); signal(SIGINT, on_term);

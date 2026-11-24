@@ -4,6 +4,7 @@
 #define AHKB_PROTO_H
 typedef struct { unsigned int type, id, a, b, c, d; unsigned long long extra; } ahkb_msg; /* 32 bytes */
 #define AHKB_TOKEN_LEN 32
+#define AHKB_PROTO 1   /* raise on every incompatible change, together with the second number in VERSION */
 enum { /* client -> daemon */
     C_HOOK = 1,     /* id; a=kind(0 kbd,1 mouse) b=on            -> D_DONE */
     C_BATCH,        /* id; a=count b=nested; count events follow -> D_DONE */
