@@ -10,9 +10,23 @@ functions to Linux. Scripts behave as they do on Windows, with
 **Tested on:** CachyOS (Arch-based) with KDE Plasma 6.8 on Wayland. Other distributions are untested; reports are welcome.
 Limiting a hotkey to one window needs KDE Plasma.
 
+## Requirements
+
+| What | Details |
+|---|---|
+| Computer | 64-bit x86 (Intel or AMD), with a keyboard and mouse |
+| System | Linux with systemd and glibc 2.34 or newer |
+| Desktop | KDE Plasma for everything; tested on Plasma 6.8 with Wayland. On other desktops, hotkeys and Send should work, but limiting a hotkey to one window and typing characters from other keyboard layouts do not |
+| Programs | Wine (tested with 11.22), Python 3.10 or newer, unzip, curl. `./setup.sh` offers to install the missing ones on Arch, Debian, Ubuntu, Fedora and openSUSE based systems |
+| For the first setup | An internet connection, and your password if programs or permissions are missing |
+| Disk space | About 400 MB, plus Wine itself |
+
+You do not need to download AutoHotkey; setup does that. Building from source also needs gcc, make, clang, lld and the headers
+of Wine, systemd and libxkbcommon.
+
 ## Install
 
-You need a 64-bit PC. Nothing is installed without asking you first.
+Nothing is installed without asking you first.
 
 1. Download `ahk-linux-wine.tar.gz` from the [latest release](https://github.com/oleja32/ahk-linux-wine/releases/latest).
 2. Right-click the file and choose *Extract here* (in KDE: *Extract > Extract archive here*).
