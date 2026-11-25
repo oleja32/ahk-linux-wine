@@ -15,7 +15,7 @@ build/version.dll: dll/bridge.c dll/version.def proto.h
 dist: all
 	rm -rf build/ahk-linux-wine && mkdir -p build/ahk-linux-wine/prebuilt build/ahk-linux-wine/launcher
 	cp README.md LICENSE VERSION check.sh setup.sh install.sh uninstall.sh build/ahk-linux-wine/
-	cp launcher/ahk launcher/detect.ahk launcher/icons.py build/ahk-linux-wine/launcher/
+	cp launcher/ahk launcher/detect.ahk launcher/icons.py launcher/70-ahk-linux-wine.rules build/ahk-linux-wine/launcher/
 	cp $(AHKD) build/version.dll build/ahk-linux-wine/prebuilt/
 	test "$$(cut -d" " -f2 VERSION)" = "$$(sed -n "s/.*define AHKB_PROTO \([0-9]*\).*/\1/p" proto.h)"
 	tar -C build --owner=0 --group=0 -czf build/ahk-linux-wine.tar.gz ahk-linux-wine

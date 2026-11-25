@@ -30,7 +30,8 @@ Nothing is installed without asking you first.
 1. Download `ahk-linux-wine.tar.gz` from the [latest release](https://github.com/oleja32/ahk-linux-wine/releases/latest).
 2. Right-click the file and choose *Extract here* (in KDE: *Extract > Extract archive here*).
 3. Open the new `ahk-linux-wine` folder, right-click an empty spot and choose *Open Terminal Here*.
-4. Start the guided setup. It checks what is missing, shows every command that needs your password, and asks before running it:
+4. Start the guided setup. It first lists what it is going to do, then shows every command that needs your password and asks
+   before running it:
 
        ./setup.sh
 
@@ -51,7 +52,7 @@ Nothing is installed without asking you first.
        #Requires AutoHotkey v2.0
        F8::Send("Hello from AutoHotkey")
 
-2. Double-click it, or type `ahk test.ahk` in a terminal. The first start takes longer, because Wine prepares itself.
+2. Double-click it, or type `ahk test.ahk` in a terminal.
    A green **H** icon appears in the system tray.
 3. Click into any text field and press **F8**.
 4. To stop it, right-click the **H** icon and choose **Exit**.
